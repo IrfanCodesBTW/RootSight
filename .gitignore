@@ -9,3 +9,6 @@ node_modules/
 storage/
 *.faiss
 *.faiss.meta
+
+# Graphify
+graphify-out/
