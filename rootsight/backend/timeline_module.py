@@ -5,9 +5,19 @@ from typing import List
 from .schemas.incident import Incident
 from .schemas.event import EventList, Event, EventType
 from .ingestion_service import RawEvent
-from .llm_clients.gemini_client import generate
+from pydantic import ValidationError
+from .llm_clients.gemini_client import generate, enforce_token_budget
 
 logger = logging.getLogger(__name__)
+
+def _fallback_timeline(incident: Incident, note: str = "Falling back due to error.") -> EventList:
+    return EventList(
+        events=[],
+        timeline_confidence=0,
+        gaps_detected=0,
+        total_events=0,
+        analysis_note=note
+    )
 
 async def build_timeline(raw_events: List[RawEvent], incident: Incident) -> EventList:
     """
@@ -16,7 +26,7 @@ async def build_timeline(raw_events: List[RawEvent], incident: Incident) -> Even
     logger.info("build_timeline.start incident_id=%s raw_events=%s", incident.incident_id, len(raw_events))
     if not raw_events:
         logger.warning("build_timeline.empty_input incident_id=%s", incident.incident_id)
-        return EventList(events=[], timeline_confidence=0, gaps_detected=0, total_events=0, analysis_note="No logs ingested.")
+        return _fallback_timeline(incident, "No logs ingested.")
 
     try:
         serialized_raw_events = json.dumps([e.model_dump(mode="json") for e in raw_events], indent=2)
@@ -49,48 +59,37 @@ async def build_timeline(raw_events: List[RawEvent], incident: Incident) -> Even
         }}
         """
 
+        prompt = enforce_token_budget(prompt)
         response_dict = await generate(prompt)
+
         if not isinstance(response_dict, dict):
             raise ValueError("Timeline LLM response is not a JSON object.")
 
-        events = []
+        # Inject mandatory fields for Pydantic validation
         raw_event_items = response_dict.get("events", [])
-        if not isinstance(raw_event_items, list):
-            raw_event_items = []
+        if isinstance(raw_event_items, list):
+            for e in raw_event_items:
+                if isinstance(e, dict):
+                    if "event_id" not in e:
+                        e["event_id"] = str(uuid.uuid4())[:8]
+                    if "incident_id" not in e:
+                        e["incident_id"] = incident.incident_id
+                    # Ensure event_type is valid
+                    et = str(e.get("event_type", "unknown")).lower()
+                    if et not in {item.value for item in EventType}:
+                        e["event_type"] = "unknown"
 
-        for e in raw_event_items:
-            if not isinstance(e, dict):
-                logger.warning("build_timeline.invalid_event_shape incident_id=%s event=%s", incident.incident_id, e)
-                continue
-            try:
-                timestamp = e.get("timestamp")
-                if not timestamp:
-                    raise ValueError("Missing event timestamp.")
-                event_type_value = str(e.get("event_type", "unknown")).lower()
-                if event_type_value not in {item.value for item in EventType}:
-                    event_type_value = EventType.UNKNOWN.value
-                events.append(Event(
-                    event_id=str(uuid.uuid4())[:8],
-                    incident_id=incident.incident_id,
-                    timestamp=timestamp,
-                    event_type=EventType(event_type_value),
-                    description=e.get("description") or "No description provided.",
-                    evidence_source=e.get("evidence_source") or "Unknown source",
-                    confidence=int(e.get("confidence", 50))
-                ))
-            except ValueError as val_err:
-                logger.warning("build_timeline.invalid_event incident_id=%s error=%s data=%s", incident.incident_id, val_err, e)
+        if "total_events" not in response_dict:
+            response_dict["total_events"] = len(raw_event_items)
 
-        event_list = EventList(
-            events=events,
-            timeline_confidence=int(response_dict.get("timeline_confidence", 50)),
-            gaps_detected=int(response_dict.get("gaps_detected", 0)),
-            total_events=len(events),
-            analysis_note=response_dict.get("analysis_note")
-        )
-        logger.info("build_timeline.complete incident_id=%s events=%s", incident.incident_id, len(event_list.events))
-        return event_list
+        try:
+            event_list = EventList(**response_dict)
+            logger.info("build_timeline.complete incident_id=%s events=%s", incident.incident_id, len(event_list.events))
+            return event_list
+        except ValidationError as e:
+            logger.error(f"[TIMELINE] LLM output invalid: {e}")
+            return _fallback_timeline(incident, f"Validation failed: {e}")
 
     except Exception as e:
         logger.exception("build_timeline.failed incident_id=%s", incident.incident_id)
-        return EventList(events=[], timeline_confidence=0, gaps_detected=0, total_events=0, analysis_note="LLM failure.")
+        return _fallback_timeline(incident, f"LLM failure: {e}")

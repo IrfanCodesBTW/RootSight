@@ -4,7 +4,8 @@ from .schemas.incident import Incident
 from .schemas.impact import Impact
 from .schemas.hypothesis import HypothesisList
 from .schemas.action import ActionList, Action, ActionType, ApprovalStatus, ExecutionStatus
-from .llm_clients.groq_client import format_json
+from pydantic import ValidationError
+from .llm_clients.groq_client import format_json, enforce_token_budget
 
 logger = logging.getLogger(__name__)
 
@@ -51,44 +52,38 @@ async def generate_actions(incident: Incident, impact: Impact, hypothesis_list: 
         }}
         """
 
+        prompt = enforce_token_budget(prompt)
         response_dict = await format_json(prompt)
+
         if not isinstance(response_dict, dict):
             raise ValueError("Groq action response is not a JSON object.")
 
-        actions = []
+        # Inject mandatory fields for Pydantic validation
         raw_actions = response_dict.get("actions", [])
-        if not isinstance(raw_actions, list):
-            raw_actions = []
+        if isinstance(raw_actions, list):
+            for a in raw_actions:
+                if isinstance(a, dict):
+                    if "action_id" not in a:
+                        a["action_id"] = str(uuid.uuid4())[:8]
+                    if "incident_id" not in a:
+                        a["incident_id"] = incident.incident_id
+                    if "approval_status" not in a:
+                        a["approval_status"] = ApprovalStatus.PENDING.value
+                    if "execution_status" not in a:
+                        a["execution_status"] = ExecutionStatus.DRAFT.value
+                    # Ensure action_type is valid
+                    at = str(a.get("action_type", "jira_ticket")).lower()
+                    if at not in {item.value for item in ActionType}:
+                        a["action_type"] = "jira_ticket"
 
-        for a in raw_actions:
-            if not isinstance(a, dict):
-                logger.warning("generate_actions.invalid_action_shape incident_id=%s action=%s", incident.incident_id, a)
-                continue
-            try:
-                status = ApprovalStatus.PENDING
-                exec_status = ExecutionStatus.DRAFT
+        try:
+            result = ActionList(**response_dict)
+            logger.info("generate_actions.complete incident_id=%s actions=%s", incident.incident_id, len(result.actions))
+            return result
+        except ValidationError as e:
+            logger.error(f"[ACTIONS] LLM output invalid: {e}")
+            return ActionList(actions=[])
 
-                full_payload = a.get("full_payload", {})
-                if not isinstance(full_payload, dict):
-                    full_payload = {"value": full_payload}
-
-                actions.append(Action(
-                    action_id=str(uuid.uuid4())[:8],
-                    incident_id=incident.incident_id,
-                    action_type=ActionType(str(a.get("action_type", "jira_ticket")).lower()),
-                    destination=str(a.get("destination", "unknown")) or "unknown",
-                    payload_preview=str(a.get("payload_preview", "Draft action")) or "Draft action",
-                    full_payload=full_payload,
-                    approval_status=status,
-                    execution_status=exec_status
-                ))
-            except ValueError as val_err:
-                logger.warning("generate_actions.invalid_action incident_id=%s error=%s data=%s", incident.incident_id, val_err, a)
-
-        result = ActionList(actions=actions)
-        logger.info("generate_actions.complete incident_id=%s actions=%s", incident.incident_id, len(result.actions))
-        return result
-
-    except Exception:
+    except Exception as e:
         logger.exception("generate_actions.failed incident_id=%s", incident.incident_id)
         return ActionList(actions=[])

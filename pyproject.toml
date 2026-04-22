@@ -17,6 +17,9 @@ dependencies = [
     "numpy>=1.26.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["rootsight*"]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

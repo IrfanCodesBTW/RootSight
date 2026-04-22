@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
     GEMINI_MODEL: str = "gemini-1.5-flash"
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GEMINI_EMBEDDING_MODEL: str = "models/text-embedding-004"
+    GEMINI_EMBEDDING_MODEL: str = "models/embedding-001"
     API_ERROR_DETAIL_IN_RESPONSE: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

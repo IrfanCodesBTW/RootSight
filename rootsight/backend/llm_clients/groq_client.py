@@ -11,19 +11,29 @@ logger = logging.getLogger(__name__)
 client = Groq(api_key=settings.GROQ_API_KEY)
 
 
-def _strip_json_fences(text: str) -> str:
+def strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
-        parts = text.split("```", 2)
-        if len(parts) >= 2:
-            text = parts[1]
-        text = text.replace("json", "", 1).strip()
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+        if text.lower().startswith("json"):
+            text = text[4:]
+    return text.strip()
+
+
+def enforce_token_budget(text: str, max_tokens: int = 3000) -> str:
+    max_chars = max_tokens * 4
+    if len(text) > max_chars:
+        logger.warning(f"[TOKEN] Truncated: {len(text)} → {max_chars} chars")
+        return text[:max_chars]
     return text
 
 
 async def format_json(prompt: str, max_retries: int = 3) -> dict:
     if not prompt or not str(prompt).strip():
         raise ValueError("Prompt must be a non-empty string.")
+
+    prompt = enforce_token_budget(prompt)
 
     for attempt in range(max_retries):
         try:
@@ -40,7 +50,7 @@ async def format_json(prompt: str, max_retries: int = 3) -> dict:
             content = getattr(choices[0].message, "content", None)
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("Groq response did not include message content.")
-            return json.loads(_strip_json_fences(content))
+            return json.loads(strip_fences(content))
         except json.JSONDecodeError as e:
             logger.warning("groq_client.invalid_json attempt=%s/%s error=%s", attempt + 1, max_retries, e)
             if attempt == max_retries - 1:

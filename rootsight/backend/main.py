@@ -1,6 +1,7 @@
 import logging
+import json
 from typing import Any
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,15 +10,18 @@ from .pipeline_orchestrator import start_pipeline, get_pipeline_state, get_all_i
 from .storage.database import create_db_and_tables
 from .api_response import success_response, error_response
 
+from .memory_module import seed_historical_incidents
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 
 app = FastAPI(title="RootSight API", version="0.1.0")
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
     logger.info("startup.begin")
     create_db_and_tables()
+    await seed_historical_incidents()
     logger.info("startup.complete")
 
 
@@ -41,11 +45,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("unhandled_exception path=%s", request.url.path)
-    message = "Internal server error."
-    if settings.API_ERROR_DETAIL_IN_RESPONSE:
-        message = str(exc)
-    return JSONResponse(status_code=500, content=error_response(message))
+    logger.error(f"[GLOBAL] Unhandled: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"data": None, "error": str(exc)}
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -89,6 +93,63 @@ async def get_incident_status(incident_id: str):
         raise HTTPException(status_code=404, detail="Incident not found")
     logger.info("get_incident_status.complete incident_id=%s status=%s", incident_id, state.get("status"))
     return success_response(state)
+
+@app.post("/api/incident/upload")
+async def upload_bundle(file: UploadFile = File(...)):
+    contents = await file.read()
+    filename = file.filename.lower()
+    try:
+        if filename.endswith(".json"):
+            bundle = json.loads(contents)
+        else:
+            from datetime import datetime
+            lines = contents.decode("utf-8").splitlines()
+            bundle = {
+                "alert": {
+                    "title": f"Manual upload: {file.filename}",
+                    "service": "unknown",
+                    "severity": "P2",
+                    "environment": "production",
+                    "started_at": datetime.utcnow().isoformat()
+                },
+                "logs": [
+                    {"timestamp": datetime.utcnow().isoformat(),
+                     "level": "INFO", "message": line,
+                     "service": "unknown", "host": "manual"}
+                    for line in lines if line.strip()
+                ]
+            }
+    except Exception as e:
+        return JSONResponse(status_code=400,
+                            content={"data": None, "error": f"Cannot parse file: {e}"})
+    
+    incident_id = await start_pipeline(bundle)
+    return success_response({"incident_id": incident_id, "status": "pipeline_started"})
+
+@app.post("/api/incident/{incident_id}/draft-script")
+async def draft_recovery_script(incident_id: str):
+    state = get_pipeline_state(incident_id)
+    if not state or not state.get("rca"):
+        raise HTTPException(status_code=400, detail="RCA data is required to draft a script.")
+    
+    from .llm_clients.gemini_client import generate, strip_fences
+    prompt = f"""
+    [SYSTEM] You are an expert SRE. Draft a safe, idempotent bash recovery script for the following incident.
+    [INCIDENT] {json.dumps(state['incident'])}
+    [RCA] {json.dumps(state['rca'])}
+    
+    Guidelines:
+    1. Include safety checks (e.g. check if service is running).
+    2. Add comments explaining each step.
+    3. Return ONLY the bash script inside ```bash fences.
+    """
+    try:
+        raw_response = await generate(prompt)
+        script = strip_fences(raw_response)
+        return success_response({"script": script})
+    except Exception as e:
+        logger.error(f"Failed to draft script: {e}")
+        return JSONResponse(status_code=500, content=error_response("Failed to generate recovery script."))
 
 @app.get("/api/incidents")
 async def list_incidents():

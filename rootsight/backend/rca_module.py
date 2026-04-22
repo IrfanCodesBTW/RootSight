@@ -4,7 +4,8 @@ import uuid
 from .schemas.incident import Incident
 from .schemas.event import EventList
 from .schemas.hypothesis import HypothesisList, Hypothesis
-from .llm_clients.gemini_client import generate
+from pydantic import ValidationError
+from .llm_clients.gemini_client import generate, enforce_token_budget
 
 logger = logging.getLogger(__name__)
 
@@ -53,61 +54,39 @@ async def analyze_root_cause(event_list: EventList, incident: Incident) -> Hypot
         }}
         """
 
+        prompt = enforce_token_budget(prompt)
         response_dict = await generate(prompt)
+
         if not isinstance(response_dict, dict):
             raise ValueError("RCA LLM response is not a JSON object.")
 
-        hypotheses = []
+        # Inject mandatory fields for Pydantic validation
         raw_hypotheses = response_dict.get("hypotheses", [])
-        if not isinstance(raw_hypotheses, list):
-            raw_hypotheses = []
+        if isinstance(raw_hypotheses, list):
+            for h in raw_hypotheses:
+                if isinstance(h, dict):
+                    if "hypothesis_id" not in h:
+                        h["hypothesis_id"] = str(uuid.uuid4())[:8]
+                    if "incident_id" not in h:
+                        h["incident_id"] = incident.incident_id
 
-        for item in raw_hypotheses:
-            if not isinstance(item, dict):
-                logger.warning(
-                    "analyze_root_cause.invalid_hypothesis_shape incident_id=%s data=%s",
-                    incident.incident_id,
-                    item,
-                )
-                continue
-            try:
-                hypotheses.append(
-                    Hypothesis(
-                        hypothesis_id=str(uuid.uuid4())[:8],
-                        incident_id=incident.incident_id,
-                        rank=int(item.get("rank", 99)),
-                        statement=item.get("statement", "Unknown"),
-                        confidence_score=int(item.get("confidence_score", 0)),
-                        supporting_evidence=item.get("supporting_evidence", []),
-                        contradicting_evidence=item.get("contradicting_evidence", []),
-                        missing_information=item.get("missing_information", []),
-                        recommended_check=item.get("recommended_check"),
-                    )
-                )
-            except ValueError as err:
-                logger.warning(
-                    "analyze_root_cause.invalid_hypothesis incident_id=%s error=%s data=%s",
-                    incident.incident_id,
-                    err,
-                    item,
-                )
+        try:
+            result = HypothesisList(**response_dict)
+            result.hypotheses.sort(key=lambda h: h.rank)
+            
+            # Post-validation low confidence check
+            if result.hypotheses and result.hypotheses[0].confidence_score < 30:
+                result.is_low_confidence = True
 
-        hypotheses.sort(key=lambda item: item.rank)
-        is_low_confidence = bool(response_dict.get("is_low_confidence", False))
-        if hypotheses and hypotheses[0].confidence_score < 30:
-            is_low_confidence = True
+            logger.info("analyze_root_cause.complete incident_id=%s hypotheses=%s", incident.incident_id, len(result.hypotheses))
+            return result
+        except ValidationError as e:
+            logger.error(f"[RCA] LLM output invalid: {e}")
+            return _fallback_hypothesis(incident.incident_id, f"Validation failed: {e}")
 
-        result = HypothesisList(
-            hypotheses=hypotheses,
-            analysis_confidence=int(response_dict.get("analysis_confidence", 50)),
-            is_low_confidence=is_low_confidence,
-            analysis_note=response_dict.get("analysis_note"),
-        )
-        logger.info("analyze_root_cause.complete incident_id=%s hypotheses=%s", incident.incident_id, len(result.hypotheses))
-        return result
-    except Exception:
+    except Exception as e:
         logger.exception("analyze_root_cause.failed incident_id=%s", incident.incident_id)
-        return _fallback_hypothesis(incident.incident_id, "LLM failure during RCA generation.")
+        return _fallback_hypothesis(incident.incident_id, f"LLM failure: {e}")
 
 
 def _fallback_hypothesis(incident_id: str, note: str) -> HypothesisList:

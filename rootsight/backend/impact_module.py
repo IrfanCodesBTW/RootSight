@@ -4,7 +4,8 @@ from .schemas.incident import Incident
 from .schemas.event import EventList
 from .schemas.hypothesis import HypothesisList
 from .schemas.impact import Impact, SeverityBand
-from .llm_clients.gemini_client import generate
+from pydantic import ValidationError
+from .llm_clients.gemini_client import generate, enforce_token_budget
 
 logger = logging.getLogger(__name__)
 
@@ -40,34 +41,30 @@ async def analyze_impact(incident: Incident, event_list: EventList, hypothesis_l
         }}
         """
 
+        prompt = enforce_token_budget(prompt)
         response_dict = await generate(prompt)
+
         if not isinstance(response_dict, dict):
             raise ValueError("Impact LLM response is not a JSON object.")
 
+        # Inject mandatory fields for Pydantic validation
+        if "incident_id" not in response_dict:
+            response_dict["incident_id"] = incident.incident_id
+
+        # Validate severity_band
         raw_band = str(response_dict.get("severity_band", "medium")).lower()
         if raw_band not in [s.value for s in SeverityBand]:
-            raw_band = "medium"
+            response_dict["severity_band"] = "medium"
 
-        affected_services = response_dict.get("affected_services", [incident.service])
-        if not isinstance(affected_services, list) or not affected_services:
-            affected_services = [incident.service]
-        affected_services = [str(item) for item in affected_services if str(item).strip()]
-        if not affected_services:
-            affected_services = [incident.service]
+        try:
+            result = Impact(**response_dict)
+            logger.info("analyze_impact.complete incident_id=%s severity_band=%s", incident.incident_id, result.severity_band)
+            return result
+        except ValidationError as e:
+            logger.error(f"[IMPACT] LLM output invalid: {e}")
+            return _fallback_impact(incident)
 
-        result = Impact(
-            incident_id=incident.incident_id,
-            affected_services=affected_services,
-            severity_band=SeverityBand(raw_band),
-            estimated_duration_minutes=response_dict.get("estimated_duration_minutes"),
-            probable_user_impact=response_dict.get("probable_user_impact", "Unknown impact based on current data."),
-            estimated_requests_affected=response_dict.get("estimated_requests_affected"),
-            business_impact_summary=response_dict.get("business_impact_summary")
-        )
-        logger.info("analyze_impact.complete incident_id=%s severity_band=%s", incident.incident_id, result.severity_band)
-        return result
-
-    except Exception:
+    except Exception as e:
         logger.exception("analyze_impact.failed incident_id=%s", incident.incident_id)
         return _fallback_impact(incident)
 

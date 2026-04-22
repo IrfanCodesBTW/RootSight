@@ -45,6 +45,7 @@ async def ingest_logs(incident: Incident, bundle_file: str = None) -> List[RawEv
         if settings.DEMO_MODE or bundle_file:
             file_to_load = bundle_file if bundle_file else "cdn_502_incident.json"
             raw_logs = _load_bundle_logs(file_to_load)
+            logger.info("[INGEST] raw_events count: %d", len(raw_logs))
         else:
             logger.warning("ingest_logs.external_not_configured incident_id=%s", incident.incident_id)
             return []
