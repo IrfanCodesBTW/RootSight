@@ -1,7 +1,11 @@
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
+
+from config.demo import DEMO_MODE
+from src.demo.demo_data import DEMO_INCIDENT
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -134,6 +138,11 @@ async def health():
     return success_response({"status": "ok", "version": "3.0.0"})
 
 
+@app.get("/demo")
+async def run_demo():
+    return success_response(DEMO_INCIDENT)
+
+
 @app.post("/trigger")
 @app.post("/api/trigger")
 async def trigger_pipeline(payload: dict[str, Any]):
@@ -142,6 +151,13 @@ async def trigger_pipeline(payload: dict[str, Any]):
     Accepts PagerDuty/Datadog payloads or manual trigger payloads.
     Validates that the payload is non-empty and contains a title or bundle_file.
     """
+    if DEMO_MODE:
+        await asyncio.sleep(1.2)
+        return JSONResponse(
+            status_code=202,
+            content=success_response({"incident_id": DEMO_INCIDENT["id"], "status": "completed"}),
+        )
+
     if not isinstance(payload, dict) or not payload:
         raise HTTPException(status_code=422, detail="Payload must be a non-empty JSON object.")
 
@@ -167,6 +183,10 @@ async def trigger_pipeline(payload: dict[str, Any]):
 @app.get("/incidents/{incident_id}")
 @app.get("/api/incidents/{incident_id}")
 async def get_incident_status(incident_id: str):
+    if DEMO_MODE:
+        await asyncio.sleep(1.2)
+        return success_response({"id": DEMO_INCIDENT["id"], "status": "completed"})
+
     if not incident_id:
         raise HTTPException(status_code=422, detail="Incident ID is required.")
 
@@ -184,6 +204,10 @@ async def get_incident_status(incident_id: str):
 @app.get("/api/incidents/{incident_id}/pipeline")
 async def get_incident_pipeline(incident_id: str):
     """Returns the current state of the pipeline for a specific incident."""
+    if DEMO_MODE:
+        await asyncio.sleep(1.2)
+        return success_response(DEMO_INCIDENT)
+
     if not incident_id:
         raise HTTPException(status_code=422, detail="Incident ID is required.")
 

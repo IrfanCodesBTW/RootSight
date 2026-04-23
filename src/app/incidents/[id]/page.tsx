@@ -60,7 +60,10 @@ export default function IncidentDetailPage() {
 
   useEffect(() => {
     fetchIncident();
-    pollRef.current = setInterval(fetchIncident, 3000);
+    const demoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+    if (!demoMode) {
+      pollRef.current = setInterval(fetchIncident, 3000);
+    }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [incidentId]);
 
