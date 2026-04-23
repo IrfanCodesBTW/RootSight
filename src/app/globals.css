@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@theme {
+  --font-geist: "Segoe UI", "Aptos", "Helvetica Neue", sans-serif;
+  --font-mono: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+:root {
+  --bg-primary: #08080d;
+  --bg-secondary: #0f0f18;
+  --bg-card: #161622;
+  --bg-card-hover: #1e1e2e;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-hover: rgba(255, 255, 255, 0.14);
+  --accent: #4d9eff;
+  --accent-dim: rgba(77, 158, 255, 0.12);
+  --text-primary: #f0f0f8;
+  --text-muted: #a8a8c4;
+  --text-dim: #606080;
+  --red: #f04858;
+  --amber: #f5a623;
+  --green: #32e08e;
+  --purple: #a78bfa;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-geist), sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+  position: relative;
+}
+
+/* Noise overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  opacity: 0.025;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.font-mono {
+  font-family: var(--font-mono), monospace;
+}
+
+/* Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-hover);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Animations */
+@keyframes slideUp {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.3s ease-out forwards;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 2px var(--accent));
+  }
+  50% {
+    opacity: 0.7;
+    filter: drop-shadow(0 0 8px var(--accent));
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Custom Utilities */
+.glass {
+  background: rgba(15, 15, 24, 0.7);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
